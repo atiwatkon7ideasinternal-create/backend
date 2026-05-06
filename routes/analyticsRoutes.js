@@ -12,36 +12,27 @@ const express = require("express");
 const router = express.Router();
 const db = require("../db/db");
 
-const get = (sql, params = []) =>
-  new Promise((resolve, reject) => {
-    db.get(sql, params, (err, row) => (err ? reject(err) : resolve(row)));
-  });
-
-const all = (sql, params = []) =>
-  new Promise((resolve, reject) => {
-    db.all(sql, params, (err, rows) => (err ? reject(err) : resolve(rows)));
-  });
-
 // GET /analytics/break-even/:productId
 // คำนวณ BEP ของสินค้าแต่ละตัว
-router.get("/break-even/:productId", async (req, res) => {
+router.get("/break-even/:productId", (req, res) => {
   try {
-    const product = await get("SELECT * FROM products WHERE id = ?", [
-      req.params.productId,
-    ]);
+    const product = db
+      .prepare("SELECT * FROM products WHERE id = ?")
+      .get(req.params.productId);
     if (!product) return res.status(404).json({ error: "Product not found" });
 
-    const fixedRow = await get(
-      "SELECT COALESCE(SUM(amount), 0) AS total FROM fixed_costs"
-    );
+    const fixedRow = db
+      .prepare("SELECT COALESCE(SUM(amount), 0) AS total FROM fixed_costs")
+      .get();
     const totalFixedCost = fixedRow.total;
 
-    const variableRow = await get(
-      `SELECT COALESCE(SUM(amount_per_unit), 0) AS total
-       FROM variable_costs
-       WHERE product_id = ? OR product_id IS NULL`,
-      [product.id]
-    );
+    const variableRow = db
+      .prepare(
+        `SELECT COALESCE(SUM(amount_per_unit), 0) AS total
+         FROM variable_costs
+         WHERE product_id = ? OR product_id IS NULL`
+      )
+      .get(product.id);
     const extraVariablePerUnit = variableRow.total;
     const variableCostPerUnit = product.cost_price + extraVariablePerUnit;
 
@@ -121,29 +112,33 @@ router.post("/break-even", (req, res) => {
 
 // GET /analytics/summary
 // สรุปยอดขาย ต้นทุน กำไร/ขาดทุน
-router.get("/summary", async (req, res) => {
+router.get("/summary", (req, res) => {
   try {
-    const sales = await get(
-      `SELECT
-         COALESCE(SUM(total), 0) AS revenue,
-         COALESCE(SUM(quantity * unit_cost), 0) AS cogs,
-         COALESCE(SUM(quantity), 0) AS units_sold
-       FROM sales`
-    );
+    const sales = db
+      .prepare(
+        `SELECT
+           COALESCE(SUM(total), 0) AS revenue,
+           COALESCE(SUM(quantity * unit_cost), 0) AS cogs,
+           COALESCE(SUM(quantity), 0) AS units_sold
+         FROM sales`
+      )
+      .get();
 
-    const fixed = await get(
-      "SELECT COALESCE(SUM(amount), 0) AS total FROM fixed_costs"
-    );
+    const fixed = db
+      .prepare("SELECT COALESCE(SUM(amount), 0) AS total FROM fixed_costs")
+      .get();
 
-    const extraVar = await get(
-      `SELECT COALESCE(SUM(s.quantity * COALESCE(vc.per_unit, 0)), 0) AS total
-       FROM sales s
-       LEFT JOIN (
-         SELECT product_id, SUM(amount_per_unit) AS per_unit
-         FROM variable_costs
-         GROUP BY product_id
-       ) vc ON vc.product_id = s.product_id OR vc.product_id IS NULL`
-    );
+    const extraVar = db
+      .prepare(
+        `SELECT COALESCE(SUM(s.quantity * COALESCE(vc.per_unit, 0)), 0) AS total
+         FROM sales s
+         LEFT JOIN (
+           SELECT product_id, SUM(amount_per_unit) AS per_unit
+           FROM variable_costs
+           GROUP BY product_id
+         ) vc ON vc.product_id = s.product_id OR vc.product_id IS NULL`
+      )
+      .get();
 
     const revenue = sales.revenue;
     const cogs = sales.cogs;

@@ -15,10 +15,12 @@ router.get("/", (req, res) => {
     params.push(product_id);
   }
   sql += " ORDER BY id DESC";
-  db.all(sql, params, (err, rows) => {
-    if (err) return res.status(500).json({ error: err.message });
+  try {
+    const rows = db.prepare(sql).all(...params);
     res.json(rows);
-  });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 router.post("/", (req, res) => {
@@ -28,51 +30,61 @@ router.post("/", (req, res) => {
       .status(400)
       .json({ error: "name and amount_per_unit are required" });
   }
-  db.run(
-    `INSERT INTO variable_costs (name, amount_per_unit, product_id, note)
-     VALUES (?, ?, ?, ?)`,
-    [name, amount_per_unit, product_id || null, note || null],
-    function (err) {
-      if (err) return res.status(500).json({ error: err.message });
-      res.json({
-        id: this.lastID,
-        name,
-        amount_per_unit,
-        product_id,
-        note,
-      });
-    }
-  );
+  try {
+    const result = db
+      .prepare(
+        `INSERT INTO variable_costs (name, amount_per_unit, product_id, note)
+         VALUES (?, ?, ?, ?)`
+      )
+      .run(name, amount_per_unit, product_id || null, note || null);
+    res.json({
+      id: result.lastInsertRowid,
+      name,
+      amount_per_unit,
+      product_id,
+      note,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 router.put("/:id", (req, res) => {
   const { name, amount_per_unit, product_id, note } = req.body;
-  db.run(
-    `UPDATE variable_costs
-     SET name = COALESCE(?, name),
-         amount_per_unit = COALESCE(?, amount_per_unit),
-         product_id = COALESCE(?, product_id),
-         note = COALESCE(?, note)
-     WHERE id = ?`,
-    [name, amount_per_unit, product_id, note, req.params.id],
-    function (err) {
-      if (err) return res.status(500).json({ error: err.message });
-      if (this.changes === 0)
-        return res.status(404).json({ error: "Variable cost not found" });
-      res.json({ updated: this.changes });
-    }
-  );
+  try {
+    const result = db
+      .prepare(
+        `UPDATE variable_costs
+         SET name = COALESCE(?, name),
+             amount_per_unit = COALESCE(?, amount_per_unit),
+             product_id = COALESCE(?, product_id),
+             note = COALESCE(?, note)
+         WHERE id = ?`
+      )
+      .run(
+        name ?? null,
+        amount_per_unit ?? null,
+        product_id ?? null,
+        note ?? null,
+        req.params.id
+      );
+    if (result.changes === 0)
+      return res.status(404).json({ error: "Variable cost not found" });
+    res.json({ updated: result.changes });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 router.delete("/:id", (req, res) => {
-  db.run(
-    "DELETE FROM variable_costs WHERE id = ?",
-    [req.params.id],
-    function (err) {
-      if (err) return res.status(500).json({ error: err.message });
-      res.json({ deleted: this.changes });
-    }
-  );
+  try {
+    const result = db
+      .prepare("DELETE FROM variable_costs WHERE id = ?")
+      .run(req.params.id);
+    res.json({ deleted: result.changes });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 module.exports = router;

@@ -3,26 +3,25 @@ const express = require("express");
 const router = express.Router();
 const db = require("../db/db");
 
-// GET users
 router.get("/", (req, res) => {
-  db.all("SELECT * FROM users", [], (err, rows) => {
-    if (err) return res.status(500).json(err);
+  try {
+    const rows = db.prepare("SELECT * FROM users").all();
     res.json(rows);
-  });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
-// POST user
 router.post("/", (req, res) => {
   const { name, email } = req.body;
-
-  db.run(
-    "INSERT INTO users (name, email) VALUES (?, ?)",
-    [name, email],
-    function (err) {
-      if (err) return res.status(500).json(err);
-      res.json({ id: this.lastID, name, email });
-    }
-  );
+  try {
+    const result = db
+      .prepare("INSERT INTO users (name, email) VALUES (?, ?)")
+      .run(name ?? null, email ?? null);
+    res.json({ id: result.lastInsertRowid, name, email });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 module.exports = router;

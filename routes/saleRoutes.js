@@ -4,16 +4,35 @@ const router = express.Router();
 const db = require("../db/db");
 
 router.get("/", (req, res) => {
-  const sql = `
-    SELECT s.*, pr.name AS product_name
-    FROM sales s
-    LEFT JOIN products pr ON pr.id = s.product_id
-    ORDER BY s.id DESC
-  `;
-  db.all(sql, [], (err, rows) => {
-    if (err) return res.status(500).json({ error: err.message });
+  try {
+    const rows = db
+      .prepare(
+        `SELECT s.*, pr.name AS product_name
+         FROM sales s
+         LEFT JOIN products pr ON pr.id = s.product_id
+         ORDER BY s.id DESC`
+      )
+      .all();
     res.json(rows);
-  });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+const insertSaleTx = db.transaction(({ product, quantity, unit_price }) => {
+  const unit_cost = product.cost_price;
+  const total = quantity * unit_price;
+  const result = db
+    .prepare(
+      `INSERT INTO sales (product_id, quantity, unit_price, unit_cost, total)
+       VALUES (?, ?, ?, ?, ?)`
+    )
+    .run(product.id, quantity, unit_price, unit_cost, total);
+  db.prepare("UPDATE products SET stock = stock - ? WHERE id = ?").run(
+    quantity,
+    product.id
+  );
+  return { id: result.lastInsertRowid, unit_cost, total };
 });
 
 // บันทึกการขาย: ตัดสต็อก และเก็บ unit_cost ขณะขาย เพื่อคำนวณกำไรย้อนหลังได้แม่น
@@ -25,72 +44,56 @@ router.post("/", (req, res) => {
       .json({ error: "product_id, quantity, unit_price are required" });
   }
 
-  db.get(
-    "SELECT * FROM products WHERE id = ?",
-    [product_id],
-    (err, product) => {
-      if (err) return res.status(500).json({ error: err.message });
-      if (!product) return res.status(404).json({ error: "Product not found" });
-      if (product.stock < quantity) {
-        return res.status(400).json({
-          error: `สต็อกไม่พอ มี ${product.stock} แต่ต้องการ ${quantity}`,
-        });
-      }
-
-      const unit_cost = product.cost_price;
-      const total = quantity * unit_price;
-
-      db.serialize(() => {
-        db.run(
-          `INSERT INTO sales (product_id, quantity, unit_price, unit_cost, total)
-           VALUES (?, ?, ?, ?, ?)`,
-          [product_id, quantity, unit_price, unit_cost, total],
-          function (err2) {
-            if (err2) return res.status(500).json({ error: err2.message });
-            const saleId = this.lastID;
-            db.run(
-              "UPDATE products SET stock = stock - ? WHERE id = ?",
-              [quantity, product_id],
-              function (err3) {
-                if (err3) return res.status(500).json({ error: err3.message });
-                res.json({
-                  id: saleId,
-                  product_id,
-                  quantity,
-                  unit_price,
-                  unit_cost,
-                  total,
-                  profit: (unit_price - unit_cost) * quantity,
-                });
-              }
-            );
-          }
-        );
+  try {
+    const product = db
+      .prepare("SELECT * FROM products WHERE id = ?")
+      .get(product_id);
+    if (!product) return res.status(404).json({ error: "Product not found" });
+    if (product.stock < quantity) {
+      return res.status(400).json({
+        error: `สต็อกไม่พอ มี ${product.stock} แต่ต้องการ ${quantity}`,
       });
     }
+
+    const { id, unit_cost, total } = insertSaleTx({
+      product,
+      quantity,
+      unit_price,
+    });
+    res.json({
+      id,
+      product_id,
+      quantity,
+      unit_price,
+      unit_cost,
+      total,
+      profit: (unit_price - unit_cost) * quantity,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+const deleteSaleTx = db.transaction((id) => {
+  const row = db.prepare("SELECT * FROM sales WHERE id = ?").get(id);
+  if (!row) return { notFound: true };
+  db.prepare("UPDATE products SET stock = stock + ? WHERE id = ?").run(
+    row.quantity,
+    row.product_id
   );
+  const result = db.prepare("DELETE FROM sales WHERE id = ?").run(id);
+  return { changes: result.changes };
 });
 
 router.delete("/:id", (req, res) => {
-  db.get("SELECT * FROM sales WHERE id = ?", [req.params.id], (err, row) => {
-    if (err) return res.status(500).json({ error: err.message });
-    if (!row) return res.status(404).json({ error: "Sale not found" });
-
-    db.serialize(() => {
-      db.run("UPDATE products SET stock = stock + ? WHERE id = ?", [
-        row.quantity,
-        row.product_id,
-      ]);
-      db.run(
-        "DELETE FROM sales WHERE id = ?",
-        [req.params.id],
-        function (err2) {
-          if (err2) return res.status(500).json({ error: err2.message });
-          res.json({ deleted: this.changes });
-        }
-      );
-    });
-  });
+  try {
+    const result = deleteSaleTx(req.params.id);
+    if (result.notFound)
+      return res.status(404).json({ error: "Sale not found" });
+    res.json({ deleted: result.changes });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 module.exports = router;
